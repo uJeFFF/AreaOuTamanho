@@ -1,4 +1,4 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
@@ -94,8 +94,6 @@
         shapeColorInput.addEventListener('input', updateSelectedObjectColor);
         shapeOpacityInput.addEventListener('input', updateSelectedObjectColor);
 
-        // ... (código da ferramenta caneta, tooltip e eventos de teclado permanece o mesmo) ...
-
         // =======================================================
         //  LÓGICA DA FERRAMENTA CANETA (Resumido para simplicidade)
         // =======================================================
@@ -130,7 +128,6 @@
                         removeValueInput(obj.shapeId);
                     });
 
-                    // Se a referência foi deletada, define a primeira forma restante como nova referência
                     if(wasRefDeleted) {
                         const firstRadio = valueInputsContainer.querySelector('input[type="radio"]');
                         if (firstRadio) firstRadio.checked = true;
@@ -155,7 +152,7 @@
         }
 
         // =======================================================
-        //  FERRAMENTAS E FUNÇÕES AUXILIARES (ATUALIZADO)
+        //  FERRAMENTAS E FUNÇÕES AUXILIARES
         // =======================================================
         function addValueInput(id) {
             const isFirstInput = valueInputsContainer.children.length === 0;
@@ -175,7 +172,22 @@
             if (inputDiv) inputDiv.remove();
         }
 
-        function setTool(tool) { finalizePath(); /* ... */ }
+        function setTool(tool) {
+            // Desativa todos os botões
+            toolButtons.forEach(button => button.classList.remove('active'));
+            document.getElementById(`tool-${tool}`).classList.add('active');
+
+            // Habilita/desabilita o modo de desenho do Fabric
+            canvas.isDrawingMode = false;
+            canvas.selection = tool === 'select';
+            canvas.forEachObject(o => o.selectable = tool === 'select');
+
+            // Mostra/esconde as instruções da caneta
+            penInstructions.style.display = tool === 'pen' ? 'block' : 'none';
+
+            // Finaliza o path se estiver desenhando
+            finalizePath();
+        }
 
         function addShape(shapeType) {
             finalizePath();
@@ -194,12 +206,42 @@
         document.getElementById('tool-select').addEventListener('click', () => setTool('select')); document.getElementById('tool-pen').addEventListener('click', () => setTool('pen')); document.getElementById('tool-rect').addEventListener('click', () => addShape('rect')); document.getElementById('tool-circle').addEventListener('click', () => addShape('circle'));
         document.getElementById('tool-clear').addEventListener('click', () => {
              finalizePath(); canvas.clear(); backgroundImg.src = '';
-             valueInputsContainer.innerHTML = ''; shapeCounter = 0;
+             valueInputsContainer.innerHTML = ''; shapeCounter = 0; resultDisplay.innerHTML = '<h3>Resultado:</h3>';
         });
         uploader.addEventListener('change', (e) => { const file = e.target.files[0]; if (file) { const reader = new FileReader(); reader.onload = (event) => backgroundImg.src = event.target.result; reader.readAsDataURL(file); } });
 
         // =======================================================
-        //  LÓGICA DE CÁLCULO (REFEITA PARA REFERÊNCIA DINÂMICA)
+        //  NOVA FUNÇÃO PARA CÁLCULO DE ÁREA REAL
+        // =======================================================
+        function getRealArea(obj) {
+            const scaleX = obj.scaleX || 1;
+            const scaleY = obj.scaleY || 1;
+
+            switch (obj.type) {
+                case 'rect':
+                    // Correto para retângulos (considerando a escala)
+                    return obj.width * obj.height * scaleX * scaleY;
+
+                case 'circle':
+                    // Fórmula da área do círculo (considerando a escala)
+                    return Math.PI * Math.pow(obj.radius, 2) * scaleX * scaleY;
+
+                case 'path':
+                    // AVISO: Este cálculo é uma aproximação baseada na bounding box.
+                    // A implementação da área real de um path (Algoritmo de Shoelace) é complexa.
+                    console.warn(`Cálculo de área para 'path' (Forma ${obj.shapeId}) é impreciso e usa a bounding box.`);
+                    const pathBox = obj.getBoundingRect();
+                    return pathBox.width * pathBox.height;
+
+                default:
+                    // Fallback para outros tipos de forma (usa a bounding box)
+                    const defaultBox = obj.getBoundingRect();
+                    return defaultBox.width * defaultBox.height;
+            }
+        }
+
+        // =======================================================
+        //  LÓGICA DE CÁLCULO (ATUALIZADA)
         // =======================================================
         document.getElementById('verify-btn').addEventListener('click', () => {
             const objects = canvas.getObjects();
@@ -227,7 +269,6 @@
 
             const baseObject = objects.find(obj => obj.shapeId === referenceShapeId);
             const baseValue = values[baseObject.shapeId];
-            const baseRect = baseObject.getBoundingRect();
             const TOLERANCIA = 0.05;
             let resultsHtml = [];
 
@@ -236,13 +277,19 @@
                 if (currentObject.shapeId === referenceShapeId) continue; // Pula a própria referência
 
                 const currentValue = values[currentObject.shapeId];
-                const currentRect = currentObject.getBoundingRect();
+                const currentRect = currentObject.getBoundingRect(); // Mantido para altura e largura
+                const baseRect = baseObject.getBoundingRect(); // Mantido para altura e largura
 
                 resultsHtml.push(`<hr><h4>Análise da Forma ${currentObject.shapeId} (em relação à Forma ${referenceShapeId})</h4>`);
                 const ratioNumerico = currentValue / baseValue;
 
                 if (checkArea) {
-                    const ratioArea = (currentRect.width * currentRect.height) / (baseRect.width * baseRect.height);
+                    const realAreaBase = getRealArea(baseObject);
+                    const realAreaCurrent = getRealArea(currentObject);
+
+                    // Previne divisão por zero se a área for 0
+                    const ratioArea = (realAreaBase !== 0) ? (realAreaCurrent / realAreaBase) : 0;
+
                     const erroArea = Math.abs(ratioArea / ratioNumerico - 1) * 100; const cor = erroArea <= (TOLERANCIA * 100) ? 'green' : 'red';
                     resultsHtml.push(`<div style="margin-bottom: 12px;"><strong style="color:${cor};">Área:</strong><br><small>Proporção numérica: ${ratioNumerico.toFixed(2)}</small><br><small>Proporção das formas: ${ratioArea.toFixed(2)}</small><br><span style="color:${cor};">Discrepância de ${erroArea.toFixed(1)}%.</span></div>`);
                 }
