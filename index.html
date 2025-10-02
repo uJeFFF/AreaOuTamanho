@@ -7,7 +7,6 @@
     <style>
         body { font-family: sans-serif; margin: 20px; display: flex; flex-direction: column; align-items: center; }
         #canvas-container { position: relative; width: 800px; height: 600px; border: 2px solid #ccc; background-color: #f0f0f0; overflow: hidden; }
-        #background-img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
         .canvas-wrapper { border-radius: 5px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
         .controls, .analysis { margin-top: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; width: 800px; box-sizing: border-box; background-color: #fafafa; }
         .controls button { padding: 8px 12px; margin: 5px; cursor: pointer; border: 1px solid #aaa; border-radius: 4px; background-color: #fff; }
@@ -31,12 +30,13 @@
         <label for="uploader">1. Carregar imagem de fundo:</label>
         <input type="file" id="uploader">
         <hr>
+        <p style="font-size: 0.9em; color: #333;"><b>Dica:</b> Use o scroll do mouse para dar <b>ZOOM</b>. Segure <b>[ALT]</b> e arraste com o mouse para navegar (<b>PAN</b>).</p>
         <label>2. Escolha a ferramenta:</label><br>
         <button id="tool-select" class="active">Selecionar / Mover / Editar</button>
         <button id="tool-rect">Adicionar Retângulo</button>
         <button id="tool-circle">Adicionar Círculo</button>
         <button id="tool-pen">Caneta (Estilo Illustrator)</button>
-        <button id="tool-clear" style="float: right; background-color: #fce8e6; border-color: #e57373;">Limpar Tudo</button>
+        <button id="tool-clear" style="float: right; background-color: #fce8e6; border-color: #e57373;">Limpar Formas</button>
         <p id="pen-instructions">Modo Caneta: Clique para pontos retos. Clique e ARRASTE para curvas. Pressione [Ctrl+Z] para desfazer o último ponto. Clique no ponto inicial para fechar a forma. Pressione [Enter] para finalizar.</p>
         <div class="color-picker">
             <label for="shapeColor">Cor da Forma:</label>
@@ -48,7 +48,6 @@
 
     <div id="canvas-container">
         <div id="tooltip"></div>
-        <img id="background-img" src="" alt="">
         <canvas id="drawing-canvas" width="800" height="600"></canvas>
     </div>
 
@@ -73,7 +72,54 @@
         let isDrawingPath = false, currentPath, pathSegments = [], lastPoint = null, firstPoint = null, isDraggingHandle = false, downPoint = null;
 
         // --- Referências ao DOM ---
-        const uploader = document.getElementById('uploader'), backgroundImg = document.getElementById('background-img'), toolButtons = document.querySelectorAll('.controls button'), penInstructions = document.getElementById('pen-instructions'), resultDisplay = document.getElementById('result'), shapeColorInput = document.getElementById('shapeColor'), shapeOpacityInput = document.getElementById('shapeOpacity'), valueInputsContainer = document.getElementById('value-inputs-container'), tooltip = document.getElementById('tooltip');
+        const uploader = document.getElementById('uploader'), toolButtons = document.querySelectorAll('.controls button'), penInstructions = document.getElementById('pen-instructions'), resultDisplay = document.getElementById('result'), shapeColorInput = document.getElementById('shapeColor'), shapeOpacityInput = document.getElementById('shapeOpacity'), valueInputsContainer = document.getElementById('value-inputs-container'), tooltip = document.getElementById('tooltip');
+
+        // =======================================================
+        //  LÓGICA DE ZOOM E PAN
+        // =======================================================
+        canvas.on('mouse:wheel', function(opt) {
+            opt.e.preventDefault();
+            opt.e.stopPropagation();
+
+            const delta = opt.e.deltaY;
+            let zoom = canvas.getZoom();
+            zoom *= 0.999 ** delta;
+            if (zoom > 20) zoom = 20; // Limite máximo de zoom
+            // >>> ALTERAÇÃO 1: Limite mínimo de zoom agora é 1 (tamanho original) <<<
+            if (zoom < 1) zoom = 1;
+
+            canvas.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom);
+        });
+
+        canvas.on('mouse:down', function(opt) {
+            const evt = opt.e;
+            // O pan só é ativado se a tecla ALT estiver pressionada E não estivermos no modo caneta
+            if (evt.altKey === true && !document.getElementById('tool-pen').classList.contains('active')) {
+                this.isDragging = true;
+                this.selection = false;
+                this.lastPosX = evt.clientX;
+                this.lastPosY = evt.clientY;
+            }
+        });
+
+        canvas.on('mouse:move', function(opt) {
+            if (this.isDragging) {
+                const e = opt.e;
+                const vpt = this.viewportTransform;
+                vpt[4] += e.clientX - this.lastPosX;
+                vpt[5] += e.clientY - this.lastPosY;
+                this.requestRenderAll();
+                this.lastPosX = e.clientX;
+                this.lastPosY = e.clientY;
+            }
+        });
+
+        canvas.on('mouse:up', function(opt) {
+            this.setViewportTransform(this.viewportTransform);
+            this.isDragging = false;
+            this.selection = true;
+        });
+
 
         // =======================================================
         //  FUNÇÕES DE COR E ATUALIZAÇÃO
@@ -97,7 +143,7 @@
         // =======================================================
         //  LÓGICA DA FERRAMENTA CANETA (Resumido para simplicidade)
         // =======================================================
-        canvas.on('mouse:down', (o) => { if (!document.getElementById('tool-pen').classList.contains('active')) return; isDrawingPath = true; /* ... */ });
+        canvas.on('mouse:down', (o) => { if (!document.getElementById('tool-pen').classList.contains('active')) return; if(this.isDragging) return; isDrawingPath = true; /* ... */ });
         canvas.on('mouse:move', (o) => { if (!isDrawingPath) return; /* ... */ });
         canvas.on('mouse:up', (o) => { if (!isDrawingPath) return; /* ... */ });
 
@@ -118,22 +164,10 @@
                 if (document.activeElement.tagName === 'INPUT') return;
                 const activeObjects = canvas.getActiveObjects();
                 if (activeObjects.length > 0) {
-                    const wasRefDeleted = activeObjects.some(obj => {
-                        const radio = document.getElementById(`ref-radio-${obj.shapeId}`);
-                        return radio && radio.checked;
-                    });
-
-                    activeObjects.forEach(obj => {
-                        canvas.remove(obj);
-                        removeValueInput(obj.shapeId);
-                    });
-
-                    if(wasRefDeleted) {
-                        const firstRadio = valueInputsContainer.querySelector('input[type="radio"]');
-                        if (firstRadio) firstRadio.checked = true;
-                    }
-
-                    canvas.discardActiveObject(); canvas.renderAll();
+                    activeObjects.forEach(obj => canvas.remove(obj));
+                    canvas.discardActiveObject();
+                    reindexAndPreserveUI();
+                    canvas.renderAll();
                 }
             }
         });
@@ -167,25 +201,56 @@
             `;
             valueInputsContainer.appendChild(inputDiv);
         }
+
         function removeValueInput(id) {
             const inputDiv = document.getElementById(`value-input-div-${id}`);
             if (inputDiv) inputDiv.remove();
         }
 
+        function reindexAndPreserveUI() {
+            const objects = canvas.getObjects();
+            const state = [];
+            objects.forEach(obj => {
+                const valueInput = document.getElementById(`value-input-${obj.shapeId}`);
+                const radioInput = document.getElementById(`ref-radio-${obj.shapeId}`);
+                state.push({
+                    objRef: obj, value: valueInput ? valueInput.value : '',
+                    isRef: radioInput ? radioInput.checked : false, oldId: obj.shapeId
+                });
+            });
+            state.sort((a, b) => a.oldId - b.oldId);
+            valueInputsContainer.innerHTML = '';
+            let hasRefBeenSet = false;
+            state.forEach((item, index) => {
+                const newId = index + 1;
+                item.objRef.shapeId = newId;
+                const inputDiv = document.createElement('div');
+                inputDiv.className = 'input-group';
+                inputDiv.id = `value-input-div-${newId}`;
+                let isCheckedAttr = '';
+                if (item.isRef) { isCheckedAttr = 'checked'; hasRefBeenSet = true; }
+                inputDiv.innerHTML = `
+                    <label for="value-input-${newId}">Valor da Forma ${newId}:</label>
+                    <input type="number" id="value-input-${newId}" placeholder="Ex: 100" value="${item.value}">
+                    <input type="radio" name="reference-shape" value="${newId}" id="ref-radio-${newId}" ${isCheckedAttr}>
+                    <label for="ref-radio-${newId}" class="ref-label">Usar como referência</label>
+                `;
+                valueInputsContainer.appendChild(inputDiv);
+            });
+            if (!hasRefBeenSet && state.length > 0) {
+                const firstRadio = valueInputsContainer.querySelector('input[type="radio"]');
+                if (firstRadio) { firstRadio.checked = true; }
+            }
+            shapeCounter = state.length;
+        }
+
         function setTool(tool) {
-            // Desativa todos os botões
             toolButtons.forEach(button => button.classList.remove('active'));
             document.getElementById(`tool-${tool}`).classList.add('active');
-
-            // Habilita/desabilita o modo de desenho do Fabric
             canvas.isDrawingMode = false;
             canvas.selection = tool === 'select';
             canvas.forEachObject(o => o.selectable = tool === 'select');
-
-            // Mostra/esconde as instruções da caneta
             penInstructions.style.display = tool === 'pen' ? 'block' : 'none';
-
-            // Finaliza o path se estiver desenhando
             finalizePath();
         }
 
@@ -204,44 +269,71 @@
         }
 
         document.getElementById('tool-select').addEventListener('click', () => setTool('select')); document.getElementById('tool-pen').addEventListener('click', () => setTool('pen')); document.getElementById('tool-rect').addEventListener('click', () => addShape('rect')); document.getElementById('tool-circle').addEventListener('click', () => addShape('circle'));
+
+        // >>> ALTERAÇÃO 2: Botão "Limpar Formas" agora preserva o fundo <<<
         document.getElementById('tool-clear').addEventListener('click', () => {
-             finalizePath(); canvas.clear(); backgroundImg.src = '';
-             valueInputsContainer.innerHTML = ''; shapeCounter = 0; resultDisplay.innerHTML = '<h3>Resultado:</h3>';
+             finalizePath();
+
+             // Remove todos os objetos um por um, para não apagar a imagem de fundo.
+             const objects = canvas.getObjects();
+             objects.forEach(obj => canvas.remove(obj));
+
+             valueInputsContainer.innerHTML = '';
+             shapeCounter = 0;
+             resultDisplay.innerHTML = '<h3>Resultado:</h3>';
+
+             canvas.discardActiveObject(); // Limpa a seleção
+             canvas.renderAll(); // Renderiza o canvas limpo
         });
-        uploader.addEventListener('change', (e) => { const file = e.target.files[0]; if (file) { const reader = new FileReader(); reader.onload = (event) => backgroundImg.src = event.target.result; reader.readAsDataURL(file); } });
+
+        uploader.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    // Reseta o zoom e o pan ao carregar uma nova imagem
+                    canvas.setZoom(1);
+                    canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+
+                    const imageUrl = event.target.result;
+                    fabric.Image.fromURL(imageUrl, function(img) {
+                        const canvasWidth = 800;
+                        const canvasHeight = 600;
+                        const scale = Math.min(canvasWidth / img.width, canvasHeight / img.height);
+
+                        canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas), {
+                            scaleX: scale,
+                            scaleY: scale,
+                            top: canvasHeight / 2,
+                            left: canvasWidth / 2,
+                            originX: 'center',
+                            originY: 'center'
+                        });
+                    });
+                };
+                reader.readAsDataURL(file);
+            }
+        });
 
         // =======================================================
-        //  NOVA FUNÇÃO PARA CÁLCULO DE ÁREA REAL
+        //  FUNÇÃO PARA CÁLCULO DE ÁREA REAL
         // =======================================================
         function getRealArea(obj) {
             const scaleX = obj.scaleX || 1;
             const scaleY = obj.scaleY || 1;
-
             switch (obj.type) {
-                case 'rect':
-                    // Correto para retângulos (considerando a escala)
-                    return obj.width * obj.height * scaleX * scaleY;
-
-                case 'circle':
-                    // Fórmula da área do círculo (considerando a escala)
-                    return Math.PI * Math.pow(obj.radius, 2) * scaleX * scaleY;
-
+                case 'rect': return obj.width * obj.height * scaleX * scaleY;
+                case 'circle': return Math.PI * Math.pow(obj.radius, 2) * scaleX * scaleY;
                 case 'path':
-                    // AVISO: Este cálculo é uma aproximação baseada na bounding box.
-                    // A implementação da área real de um path (Algoritmo de Shoelace) é complexa.
                     console.warn(`Cálculo de área para 'path' (Forma ${obj.shapeId}) é impreciso e usa a bounding box.`);
-                    const pathBox = obj.getBoundingRect();
-                    return pathBox.width * pathBox.height;
-
+                    const pathBox = obj.getBoundingRect(); return pathBox.width * pathBox.height;
                 default:
-                    // Fallback para outros tipos de forma (usa a bounding box)
-                    const defaultBox = obj.getBoundingRect();
-                    return defaultBox.width * defaultBox.height;
+                    const defaultBox = obj.getBoundingRect(); return defaultBox.width * defaultBox.height;
             }
         }
 
         // =======================================================
-        //  LÓGICA DE CÁLCULO (ATUALIZADA)
+        //  LÓGICA DE CÁLCULO (Sem alterações)
         // =======================================================
         document.getElementById('verify-btn').addEventListener('click', () => {
             const objects = canvas.getObjects();
@@ -252,7 +344,6 @@
 
             const referenceShapeId = parseInt(checkedRadio.value, 10);
 
-            // Coleta e valida todos os valores
             const values = {};
             let allValuesValid = true;
             for (const obj of objects) {
@@ -272,13 +363,12 @@
             const TOLERANCIA = 0.05;
             let resultsHtml = [];
 
-            // Compara cada objeto com a referência selecionada
             for (const currentObject of objects) {
-                if (currentObject.shapeId === referenceShapeId) continue; // Pula a própria referência
+                if (currentObject.shapeId === referenceShapeId) continue;
 
                 const currentValue = values[currentObject.shapeId];
-                const currentRect = currentObject.getBoundingRect(); // Mantido para altura e largura
-                const baseRect = baseObject.getBoundingRect(); // Mantido para altura e largura
+                const currentRect = currentObject.getBoundingRect();
+                const baseRect = baseObject.getBoundingRect();
 
                 resultsHtml.push(`<hr><h4>Análise da Forma ${currentObject.shapeId} (em relação à Forma ${referenceShapeId})</h4>`);
                 const ratioNumerico = currentValue / baseValue;
@@ -286,10 +376,7 @@
                 if (checkArea) {
                     const realAreaBase = getRealArea(baseObject);
                     const realAreaCurrent = getRealArea(currentObject);
-
-                    // Previne divisão por zero se a área for 0
                     const ratioArea = (realAreaBase !== 0) ? (realAreaCurrent / realAreaBase) : 0;
-
                     const erroArea = Math.abs(ratioArea / ratioNumerico - 1) * 100; const cor = erroArea <= (TOLERANCIA * 100) ? 'green' : 'red';
                     resultsHtml.push(`<div style="margin-bottom: 12px;"><strong style="color:${cor};">Área:</strong><br><small>Proporção numérica: ${ratioNumerico.toFixed(2)}</small><br><small>Proporção das formas: ${ratioArea.toFixed(2)}</small><br><span style="color:${cor};">Discrepância de ${erroArea.toFixed(1)}%.</span></div>`);
                 }
